@@ -1,53 +1,63 @@
 package main
 
 import (
-	"fmt"
+	"log"
+	"os"
 
-	"github.com/google/uuid"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
+	"github.com/Mobilizes/materi-be-alpro/config"
+	"github.com/Mobilizes/materi-be-alpro/database/entities"
+	"github.com/Mobilizes/materi-be-alpro/database/seeders"
+	"github.com/Mobilizes/materi-be-alpro/modules/user"
+	userController "github.com/Mobilizes/materi-be-alpro/modules/user/controller"
+	userRepository "github.com/Mobilizes/materi-be-alpro/modules/user/repository"
+	userService "github.com/Mobilizes/materi-be-alpro/modules/user/service"
+	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
+
+	"github.com/Mobilizes/materi-be-alpro/modules/auth"
+	authController "github.com/Mobilizes/materi-be-alpro/modules/auth/controller"
+	authService "github.com/Mobilizes/materi-be-alpro/modules/auth/service"
 )
 
-type User struct {
-	ID       uuid.UUID `gorm:"type:uuid;primary_key;default:uuid_generate_v4()" json:"id"`
-	Name     string    `gorm:"not null" json:"name"`
-	Email    string    `gorm:"unique;not null" json:"email"`
-	Password string    `gorm:"not null" json:"-"` // tidak muncul di JSON response
-}
-
-// =======
-// DB_HOST=localhost
-// DB_USER=alpro
-// DB_PASSWORD=alpro-db-password
-// DB_NAME=alpro-db
-// DB_PORT=5432
-
 func main() {
-	// Harusnya menggunakan .env but for demonstration only
-	dsn := "host=localhost user=alpro password=alpro dbname=alpro port=5432 sslmode=disable TimeZone=Asia/Jakarta"
-
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	// Load .env
+	err := godotenv.Load()
 	if err != nil {
-		panic("failed to connect database")
+		log.Println("Warning: Error loading .env file")
 	}
 
-	// Karena user menggunakan uuid
-	db.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
-
-	db.AutoMigrate(&User{})
-
-	newUser := User{
-		Name:     "John Doe",
-		Email:    "john@example.com",
-		Password: "hashed_password_here",
+	port := os.Getenv("APP_PORT")
+	if port == "" {
+		port = "8880"
 	}
-	db.Create(&newUser)
-	fmt.Println("Created User ID:", newUser.ID)
 
-	var user User
-	db.First(&user, "id = ?", newUser.ID)
-	fmt.Println("User:", user)
+	// Connect to database
+	db := config.SetupDatabase()
 
-	db.Delete(&user, "id = ?", user.ID)
-	fmt.Println("Deleted user!")
+	// Auto migrate the user module
+	db.AutoMigrate(&entities.User{})
+	seeders.SeedUsers(db)
+
+	// Initialize Gin app
+	r := gin.Default()
+
+	// Setup routes group
+	api := r.Group("/api")
+
+	// Setup Services
+	jwtSvc := authService.NewJWTService()
+	userRepo := userRepository.NewUserRepository(db)
+	uService := userService.NewUserService(userRepo)
+	aService := authService.NewAuthService(userRepo, jwtSvc)
+
+	// Setup Controllers
+	userCtrl := userController.NewUserController(uService)
+	authCtrl := authController.NewAuthController(aService)
+
+	// Register Routes
+	auth.RegisterAuthRoutes(api, authCtrl)
+	user.RegisterUserRoutes(api, userCtrl, jwtSvc)
+
+	// Start App
+	r.Run(":" + port)
 }
